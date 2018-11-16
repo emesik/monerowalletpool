@@ -7,10 +7,16 @@ import subprocess
 import tempfile
 import time
 
+__version__ = '0.1'
+
 _log = logging.getLogger(__name__)
 
 
 class CommunicationError(Exception):
+    pass
+
+
+class WalletCreationError(CommunicationError):
     pass
 
 
@@ -53,6 +59,7 @@ class WalletManager(object):
             if tmout >= 10:
                 wpopen.kill()
                 break
+        return out, err
 
     def create_wallet(self, address, viewkey):
         with tempfile.TemporaryDirectory() as wdir:
@@ -73,14 +80,18 @@ class WalletManager(object):
             wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))
             wcreate.stdin.write(b'\n\n')
             wcreate.stdin.write(b'0\n')
-            # TODO: any sort of error handling
-            self._shutdown(wcreate)
+            out, _ = self._shutdown(wcreate)
+            if not os.path.exists(wfile):
+                error_re = re.compile(r'(Error:.*)').search(out.decode('utf-8'))
+                if error_re:
+                    raise WalletCreationError(error_re.groups()[0])
+                raise WalletCreationError('Unknown error')
             kfile = '%s.keys' % wfile
             shutil.move(wfile, os.path.join(self.directory, str(address)))
             shutil.move(kfile, os.path.join(self.directory, '%s.keys' % str(address)))
             return address
 
-    def gen_wallet(self):
+    def generate_wallet(self):
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
             _log.debug('Wallet file: %s' % wfile)
@@ -99,7 +110,7 @@ class WalletManager(object):
             while b'Generated' not in out:
                 out = wcreate.stdout.readline()
                 _log.debug('stdout: %s' % out)
-            addr_re = re.compile('Generated new wallet:\s([^\s]+)').search(out.decode('utf-8'))
+            addr_re = re.compile(r'Generated new wallet:\s([^\s]+)').search(out.decode('utf-8'))
             if not addr_re:
                 wcreate.kill()
                 raise CommunicationError('Cannot find address')
