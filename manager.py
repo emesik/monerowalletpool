@@ -34,12 +34,51 @@ class WalletManager(object):
 
     def _common_args(self):
         args = ['--password', '',
-                '--daemon-address', '%s:%s' % (self.daemon_host, self.daemon_port)]
+                '--daemon-address', '%s:%s' % (self.daemon_host, self.daemon_port),
+                '--log-file', '/dev/null']
         if self.net == 'stagenet':
             args.append('--stagenet')
         elif self.net == 'testnet':
             args.append('--testnet')
         return args
+
+    def _shutdown(self, wpopen):
+        out, err = wpopen.communicate()
+        _log.debug('stdout: %s' % out)
+        _log.debug('stderr: %s' % err)
+        tmout = 0
+        while not wpopen.poll():
+            time.sleep(1)
+            tmout += 1
+            if tmout >= 10:
+                wpopen.kill()
+                break
+
+    def create_wallet(self, address, viewkey):
+        with tempfile.TemporaryDirectory() as wdir:
+            wfile = os.path.join(wdir, 'wallet')
+            _log.debug('Wallet file: %s' % wfile)
+            args = [self.cmd_cli,
+                    '--generate-from-view-key', wfile]
+            args.extend(self._common_args())
+            _log.debug(' '.join(args))
+            wcreate = subprocess.Popen(args, bufsize=0,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out = b''
+            while b'Logging' not in out:
+                out = wcreate.stdout.readline()
+                _log.debug('stdout: %s' % out)
+            wcreate.stdin.write(b'%s\n' % str(address).encode('ascii'))
+            _log.debug(b'%s\n' % str(address).encode('ascii'))
+            wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))
+            wcreate.stdin.write(b'\n\n')
+            wcreate.stdin.write(b'0\n')
+            # TODO: any sort of error handling
+            self._shutdown(wcreate)
+            kfile = '%s.keys' % wfile
+            shutil.move(wfile, os.path.join(self.directory, str(address)))
+            shutil.move(kfile, os.path.join(self.directory, '%s.keys' % str(address)))
+            return address
 
     def gen_wallet(self):
         with tempfile.TemporaryDirectory() as wdir:
@@ -66,26 +105,8 @@ class WalletManager(object):
                 raise CommunicationError('Cannot find address')
             address = monero.address.Address(addr_re.groups()[0])
             _log.debug('Address: %s' % address)
-            out, err = wcreate.communicate()
-            tmout = 0
-            while not wcreate.poll():
-                time.sleep(1)
-                tmout += 1
-                if tmout >= 10:
-                    wcreate.kill()
-                    break
+            self._shutdown(wcreate)
             kfile = '%s.keys' % wfile
             shutil.move(wfile, os.path.join(self.directory, str(address)))
             shutil.move(kfile, os.path.join(self.directory, '%s.keys' % str(address)))
             return address
-
-
-if __name__ == '__main__':
-    import sys
-    try:
-        directory = sys.argv[1]
-    except IndexError:
-        directory = None
-    wf = WalletManager(directory=directory, daemon_port=38081, net='stagenet')
-    while True:
-        print(wf.gen_wallet())
