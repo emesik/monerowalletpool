@@ -1,5 +1,7 @@
+import itertools
 import logging
 import monero
+import monero.backends.jsonrpc
 import os
 import re
 import shutil
@@ -27,14 +29,18 @@ class WalletManager(object):
     daemon_host = '127.0.0.1'
     daemon_port = 18081
     net = 'mainnet'
+    rpc_port_range = (18090, 18200)     # like in range()
 
-    def __init__(self, directory=None, cmd_cli=None, cmd_rpc=None, daemon_host=None, daemon_port=None, net=None):
+    def __init__(self, directory=None, net=None, cmd_cli=None, cmd_rpc=None,
+            daemon_host=None, daemon_port=None, rpc_port_range=None):
         self.directory = directory or self.directory
         self.cmd_cli = cmd_cli or self.cmd_cli
         self.cmd_rpc = cmd_rpc or self.cmd_rpc
+        self.net = net or self.net
         self.daemon_host = daemon_host or self.daemon_host
         self.daemon_port = daemon_port or self.daemon_port
-        self.net = net or self.net
+        self.rpc_port_range = rpc_port_range or self.rpc_port_range
+        self._rpc_port_gen = itertools.cycle(range(*self.rpc_port_range))
         assert self.net in ('mainnet', 'stagenet', 'testnet')
         assert os.path.exists(self.directory) and os.path.isdir(self.directory)
 
@@ -70,7 +76,7 @@ class WalletManager(object):
             args.extend(self._common_args())
             _log.debug(' '.join(args))
             wcreate = subprocess.Popen(args, bufsize=0,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out = b''
             while b'Logging' not in out:
                 out = wcreate.stdout.readline()
@@ -101,7 +107,7 @@ class WalletManager(object):
             args.extend(self._common_args())
             _log.debug(' '.join(args))
             wcreate = subprocess.Popen(args, bufsize=0,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out = b''
             while b'English' not in out:
                 out = wcreate.stdout.readline()
@@ -121,3 +127,38 @@ class WalletManager(object):
             shutil.move(wfile, os.path.join(self.directory, str(address)))
             shutil.move(kfile, os.path.join(self.directory, '%s.keys' % str(address)))
             return address
+
+    def open_wallet(self, address):
+        port = next(self._rpc_port_gen)
+        args = [self.cmd_rpc,
+                '--wallet-file', os.path.join(self.directory, str(address)),
+                '--rpc-bind-port', str(port),
+                '--disable-rpc-login']
+        args.extend(self._common_args())
+        _log.debug(' '.join(args))
+        return WalletConnection(address, port, args)
+
+
+class WalletConnection(object):
+    def __init__(self, address, port, args):
+        self.port = port
+        self._wallet_rpc = subprocess.Popen(args, bufsize=0,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(3)
+        self.wallet = monero.wallet.Wallet(
+            monero.backends.jsonrpc.JSONRPCWallet(port=port))
+        assert self.wallet.address() == address
+        self.address = address
+
+    def close(self):
+        self._wallet_rpc.terminate()
+        tmout = 0
+        while not self._wallet_rpc.poll():
+            time.sleep(1)
+            tmout += 1
+            if tmout >= 10:
+                self._wallet_rpc.kill()
+                break
+
+    def __del__(self):
+        self.close()
