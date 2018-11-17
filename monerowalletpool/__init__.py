@@ -4,6 +4,7 @@ import monero
 import monero.backends.jsonrpc
 import os
 import re
+import requests
 import shutil
 import subprocess
 import tempfile
@@ -144,9 +145,17 @@ class WalletConnection(object):
         self.port = port
         self._wallet_rpc = subprocess.Popen(args, bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        time.sleep(3)
-        self.wallet = monero.wallet.Wallet(
-            monero.backends.jsonrpc.JSONRPCWallet(port=port))
+        retries = 0
+        while True:
+            time.sleep(3)
+            try:
+                self.wallet = monero.wallet.Wallet(
+                    monero.backends.jsonrpc.JSONRPCWallet(port=port))
+                break
+            except requests.exceptions.ConnectionError:
+                if retries >= 10:
+                    raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
+                retries += 1
         assert self.wallet.address() == address
         self.address = address
 
@@ -160,5 +169,68 @@ class WalletConnection(object):
                 self._wallet_rpc.kill()
                 break
 
-    def __del__(self):
-        self.close()
+
+class WalletPool(object):
+    manager = None
+    running = None
+    max_running = 10
+    bc_height = 0
+    treat_as_synced_height_diff = 1
+
+    def __init__(self, manager, max_running=None,
+            daemon_host='127.0.0.1', daemon_port=18081, daemon_user='', daemon_password=''):
+        self.manager = manager or self.manager
+        if self.manager is None:
+            raise ValueError('Cannot run pool with no WalletManager.')
+        self.max_running = max_running or self.max_running
+        self.daemon = monero.daemon.Daemon(
+            monero.backends.jsonrpc.JSONRPCDaemon(
+                host=daemon_host, port=daemon_port, user=daemon_user, password=daemon_password))
+        self.running = {}
+        self._synced = set()
+
+    def next_addr(self):
+        """Method which gets another address to be monitored. Returns address or None if no more
+        addresses available at the moment. It must not block."""
+        raise NotImplementedError('Subclass {cls} to implement next_addr()'.format(cls=type(self)))
+
+    def before_wallet_start(self, address):
+        _log.info('starting {addr}'.format(addr=address))
+
+    def after_wallet_start(self, connection):
+        _log.info(' started {addr}'.format(addr=connection.address))
+
+    def after_wallet_synced(self, connection):
+        _log.info('  SYNCED {addr}'.format(addr=connection.address))
+
+    def before_wallet_stop(self, connection):
+        _log.info('stopping {addr}'.format(addr=connection.address))
+
+    def after_wallet_stop(self, address):
+        _log.info(' stopped {addr}'.format(addr=address))
+
+    def run(self):
+        while True:
+            self.bc_height = self.daemon.height()
+            _log.info('Running: {}'.format(len(self.running)))
+            while len(self.running) < self.max_running:
+                newaddr = str(self.next_addr())
+                if newaddr is None or newaddr in self.running:
+                    # don't start duplicates
+                    continue
+                self.before_wallet_start(newaddr)
+                cx = self.manager.open_wallet(newaddr)
+                self.running[newaddr] = cx
+                self.after_wallet_start(cx)
+            for addr, cx in list(self.running.items()):
+                wh = cx.wallet.height()
+                synced = self.bc_height - wh <= self.treat_as_synced_height_diff
+                if synced:
+                    self._synced.add(addr)
+                    self.after_wallet_synced(cx)
+                    self.before_wallet_stop(cx)
+                    cx.close()
+                    del self.running[addr]
+                    self.after_wallet_stop(addr)
+                time.sleep(1)
+            time.sleep(10)
