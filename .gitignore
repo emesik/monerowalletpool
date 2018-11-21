@@ -4,4 +4,8 @@
 *.egg-info
 *.bak
 *~
+*.retry
+*.egg-info
+__pycache__
+dist/
 wallets/
