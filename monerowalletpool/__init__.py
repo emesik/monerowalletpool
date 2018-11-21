@@ -6,8 +6,11 @@ import os
 import re
 import requests
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 
 __version__ = '0.1'
@@ -23,14 +26,13 @@ class WalletCreationError(CommunicationError):
     pass
 
 
-class WalletManager(object):
+class WalletsManager(object):
     directory = '.'
     cmd_cli = 'monero-wallet-cli'
     cmd_rpc = 'monero-wallet-rpc'
     daemon_host = '127.0.0.1'
     daemon_port = 18081
     net = 'mainnet'
-    rpc_port_range = (18090, 18200)     # like in range()
 
     def __init__(self, directory=None, net=None, cmd_cli=None, cmd_rpc=None,
             daemon_host=None, daemon_port=None, rpc_port_range=None):
@@ -40,8 +42,6 @@ class WalletManager(object):
         self.net = net or self.net
         self.daemon_host = daemon_host or self.daemon_host
         self.daemon_port = daemon_port or self.daemon_port
-        self.rpc_port_range = rpc_port_range or self.rpc_port_range
-        self._rpc_port_gen = itertools.cycle(range(*self.rpc_port_range))
         assert self.net in ('mainnet', 'stagenet', 'testnet')
         assert os.path.exists(self.directory) and os.path.isdir(self.directory)
 
@@ -129,37 +129,75 @@ class WalletManager(object):
             shutil.move(kfile, os.path.join(self.directory, '%s.keys' % str(address)))
             return address
 
-    def open_wallet(self, address):
-        port = next(self._rpc_port_gen)
+    def open_wallet(self, address, port):
         args = [self.cmd_rpc,
                 '--wallet-file', os.path.join(self.directory, str(address)),
                 '--rpc-bind-port', str(port),
                 '--disable-rpc-login']
         args.extend(self._common_args())
         _log.debug(' '.join(args))
-        return WalletConnection(address, port, args)
-
-
-class WalletConnection(object):
-    def __init__(self, address, port, args):
-        self.port = port
-        self._wallet_rpc = subprocess.Popen(args, bufsize=0,
+        return subprocess.Popen(args, bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        retries = 0
-        while True:
-            time.sleep(3)
-            try:
-                self.wallet = monero.wallet.Wallet(
-                    monero.backends.jsonrpc.JSONRPCWallet(port=port))
-                break
-            except requests.exceptions.ConnectionError:
-                if retries >= 10:
-                    raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
-                retries += 1
-        assert self.wallet.address() == address
+
+
+class WalletController(threading.Thread):
+    status = 'starting'
+    # statuses are:     starting, syncing, synced, closing, closed, failed
+    shut_down = False   # set from external thread to stop this WalletController
+    treat_as_synced_height_diff = 1
+
+    def __init__(self, address, port, manager, daemon):
+        self.port = port
         self.address = address
+        self._manager = manager
+        self._daemon = daemon
+        super(WalletController, self).__init__(name=str(address))
+
+    def run(self):
+        _log.debug('run(): {}'.format(self.address))
+        self.init()
+        try:
+            while self._daemon.height() > self._wallet.height() + self.treat_as_synced_height_diff:
+                time.sleep(20)
+            sec = 0
+            while not self.shut_down:
+                if sec % 60 == 0:   # block generation period
+                    self.incoming = self._wallet.incoming()
+                    self.outgoing = self._wallet.outgoing()
+                    self.status = 'synced'
+                time.sleep(1)
+                sec += 1
+        finally:
+            self.close()
+
+    def init(self):
+        self._wallet_rpc = self._manager.open_wallet(self.address, self.port)
+        try:
+            retries = 0
+            while True:
+                time.sleep(3)
+                try:
+                    wallet = monero.wallet.Wallet(
+                        monero.backends.jsonrpc.JSONRPCWallet(port=self.port))
+                    break
+                except requests.exceptions.ConnectionError:
+                    if retries >= 10:
+                        self.status = 'failed'
+                        raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
+                    retries += 1
+            waddr = wallet.address()
+            if waddr != self.address:
+                self.status = 'failed'
+                raise CommunicationError('Wallet address {} is not the same as address passed in constructor: {}'\
+                        .format(waddr, self.address))
+            self._wallet = wallet
+            self.status = 'syncing'
+        except Exception as e:
+            self.close()
+            raise
 
     def close(self):
+        self.status = 'closing'
         self._wallet_rpc.terminate()
         tmout = 0
         while not self._wallet_rpc.poll():
@@ -168,69 +206,64 @@ class WalletConnection(object):
             if tmout >= 10:
                 self._wallet_rpc.kill()
                 break
+        self.status = 'closed'
 
 
 class WalletPool(object):
     manager = None
     running = None
-    max_running = 10
+    rpc_port_range = (18090, 18200)     # like in range()
+    max_running = 2
     bc_height = 0
-    treat_as_synced_height_diff = 1
 
     def __init__(self, manager, max_running=None,
             daemon_host='127.0.0.1', daemon_port=18081, daemon_user='', daemon_password=''):
         self.manager = manager or self.manager
         if self.manager is None:
             raise ValueError('Cannot run pool with no WalletManager.')
-        self.max_running = max_running or self.max_running
+        self._rpc_port_gen = itertools.cycle(range(*self.rpc_port_range))
+        self.max_running = min(
+            max_running or self.max_running,
+            self.rpc_port_range[1] - self.rpc_port_range[0])
         self.daemon = monero.daemon.Daemon(
             monero.backends.jsonrpc.JSONRPCDaemon(
                 host=daemon_host, port=daemon_port, user=daemon_user, password=daemon_password))
         self.running = {}
-        self._synced = set()
 
     def next_addr(self):
         """Method which gets another address to be monitored. Returns address or None if no more
         addresses available at the moment. It must not block."""
         raise NotImplementedError('Subclass {cls} to implement next_addr()'.format(cls=type(self)))
 
-    def before_wallet_start(self, address):
-        _log.info('starting {addr}'.format(addr=address))
-
-    def after_wallet_start(self, connection):
-        _log.info(' started {addr}'.format(addr=connection.address))
-
-    def after_wallet_synced(self, connection):
-        _log.info('  SYNCED {addr}'.format(addr=connection.address))
-
-    def before_wallet_stop(self, connection):
-        _log.info('stopping {addr}'.format(addr=connection.address))
-
-    def after_wallet_stop(self, address):
-        _log.info(' stopped {addr}'.format(addr=address))
+    def wallet_synced(self, ctrl):
+        _log.warning('Wallet {} synced but the handler does nothing.'.format(ctrl.address))
 
     def run(self):
+        signal.signal(signal.SIGINT, self.stop)
         while True:
-            self.bc_height = self.daemon.height()
             _log.info('Running: {}'.format(len(self.running)))
             while len(self.running) < self.max_running:
                 newaddr = str(self.next_addr())
                 if newaddr is None or newaddr in self.running:
                     # don't start duplicates
                     continue
-                self.before_wallet_start(newaddr)
-                cx = self.manager.open_wallet(newaddr)
-                self.running[newaddr] = cx
-                self.after_wallet_start(cx)
-            for addr, cx in list(self.running.items()):
-                wh = cx.wallet.height()
-                synced = self.bc_height - wh <= self.treat_as_synced_height_diff
-                if synced:
-                    self._synced.add(addr)
-                    self.after_wallet_synced(cx)
-                    self.before_wallet_stop(cx)
-                    cx.close()
+                ctrl = WalletController(newaddr, next(self._rpc_port_gen), self.manager, self.daemon)
+                self.running[newaddr] = ctrl
+                ctrl.start()
+            for addr, ctrl in list(self.running.items()):
+                _log.info('{}: {}'.format(addr[:6], ctrl.status))
+                if ctrl.status == 'synced':
+                    self.wallet_synced(ctrl)
+                elif ctrl.status == 'closed':
                     del self.running[addr]
-                    self.after_wallet_stop(addr)
-                time.sleep(1)
-            time.sleep(10)
+            time.sleep(5)
+
+    def stop(self, *args):
+        _log.info('SIGINT received, cleaning up.')
+        for addr, ctrl in self.running.items():
+            _log.info('{}: {}'.format(addr[:6], ctrl.status))
+            ctrl.shut_down = True
+        for _, ctrl in self.running.items():
+            _log.debug('Waiting for {} to stop'.format(ctrl.address))
+            ctrl.join()
+        sys.exit(0)
