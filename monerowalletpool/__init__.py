@@ -140,9 +140,15 @@ class WalletsManager(object):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+WALLET_STARTING = 'starting'
+WALLET_SYNCING = 'syncing'
+WALLET_SYNCED = 'synced'
+WALLET_CLOSING = 'closing'
+WALLET_FAILED = 'failed'
+
+
 class WalletController(threading.Thread):
-    status = 'starting'
-    # statuses are:     starting, syncing, synced, closing, closed, failed
+    status = WALLET_STARTING
     shut_down = False   # set from external thread to stop this WalletController
     treat_as_synced_height_diff = 1
 
@@ -164,7 +170,7 @@ class WalletController(threading.Thread):
                 if sec % 60 == 0:   # block generation period
                     self.incoming = self._wallet.incoming()
                     self.outgoing = self._wallet.outgoing()
-                    self.status = 'synced'
+                    self.status = WALLET_SYNCED
                 time.sleep(1)
                 sec += 1
         finally:
@@ -182,22 +188,22 @@ class WalletController(threading.Thread):
                     break
                 except requests.exceptions.ConnectionError:
                     if retries >= 10:
-                        self.status = 'failed'
+                        self.status = WALLET_FAILED
                         raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
                     retries += 1
             waddr = wallet.address()
             if waddr != self.address:
-                self.status = 'failed'
+                self.status = WALLET_FAILED
                 raise CommunicationError('Wallet address {} is not the same as address passed in constructor: {}'\
                         .format(waddr, self.address))
             self._wallet = wallet
-            self.status = 'syncing'
+            self.status = WALLET_SYNCING
         except Exception as e:
             self.close()
             raise
 
     def close(self):
-        self.status = 'closing'
+        self.status = WALLET_CLOSING
         self._wallet_rpc.terminate()
         tmout = 0
         while not self._wallet_rpc.poll():
@@ -206,7 +212,7 @@ class WalletController(threading.Thread):
             if tmout >= 10:
                 self._wallet_rpc.kill()
                 break
-        self.status = 'closed'
+        self.status = WALLET_CLOSED
 
 
 class WalletPool(object):
@@ -252,9 +258,9 @@ class WalletPool(object):
                 ctrl.start()
             for addr, ctrl in list(self.running.items()):
                 _log.info('{}: {}'.format(addr[:6], ctrl.status))
-                if ctrl.status == 'synced':
+                if ctrl.status == WALLET_SYNCED:
                     self.wallet_synced(ctrl)
-                elif ctrl.status == 'closed':
+                elif ctrl.status == WALLET_CLOSED:
                     del self.running[addr]
             time.sleep(5)
 
