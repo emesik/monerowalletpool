@@ -1,3 +1,4 @@
+import collections
 import itertools
 import logging
 import monero
@@ -27,6 +28,7 @@ class WalletCreationError(CommunicationError):
 
 
 class WalletsManager(object):
+    """Manages a directory of wallets. Can list, create, open and generate wallets."""
     directory = '.'
     cmd_cli = 'monero-wallet-cli'
     cmd_rpc = 'monero-wallet-rpc'
@@ -68,7 +70,32 @@ class WalletsManager(object):
                 break
         return out, err
 
+    def list_wallets(self):
+        """Returns a sequence of wallet addresses that are available to this manager.
+        Uninitialized wallets will be first in the sequence.
+        """
+        addresses = collections.deque()
+        for i in os.listdir(self.directory):
+            # scan the directory for *.keys files, assume that * is the address
+            if not i.endswith('.keys'):
+                continue
+            try:
+                addr = monero.address.Address(i.replace('.keys', ''))
+            except ValueError:
+                pass
+            if self.net == 'mainnet' and not addr.is_mainnet() \
+                or self.net == 'stagenet' and not addr.is_stagenet() \
+                or self.net == 'testnet' and not addr.is_testnet():
+                continue
+            if os.path.exists(os.path.join(self.directory, str(addr))):
+                addresses.append(addr)
+            else:
+                # wallet is not initialized (only .keys file), add it at the beginning
+                addresses.appendleft(addr)
+        return addresses
+
     def create_wallet(self, address, viewkey):
+        """Creates a view-only wallet."""
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
             _log.debug('Wallet file: %s' % wfile)
@@ -99,6 +126,7 @@ class WalletsManager(object):
             return address
 
     def generate_wallet(self):
+        """Generates a random wallet and returns the address."""
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
             _log.debug('Wallet file: %s' % wfile)
@@ -130,6 +158,7 @@ class WalletsManager(object):
             return address
 
     def open_wallet(self, address, port):
+        """Starts RPC server for the wallet and returns its Popen object."""
         args = [self.cmd_rpc,
                 '--wallet-file', os.path.join(self.directory, str(address)),
                 '--rpc-bind-port', str(port),
@@ -144,11 +173,20 @@ WALLET_STARTING = 'starting'
 WALLET_SYNCING = 'syncing'
 WALLET_SYNCED = 'synced'
 WALLET_CLOSING = 'closing'
+WALLET_CLOSED = 'closed'
 WALLET_FAILED = 'failed'
 
 
 class WalletController(threading.Thread):
+    """A threat that controls running wallet. Needs a daemon connection to determine whether
+    wallet height is up to date (synced). Exposes three fields:
+        * `status` - indicates the state of the wallet, where `WALLET_SYNCED` means a running and
+          fully synced wallet,
+        * `wallet` - the `monero.wallet.Wallet` object that allows talking to wallet API.
+        * `shut_down` - a flag which causes the wallet to shut down gracefully once set to `True`.
+    """
     status = WALLET_STARTING
+    wallet = None
     shut_down = False   # set from external thread to stop this WalletController
     treat_as_synced_height_diff = 1
 
@@ -163,16 +201,11 @@ class WalletController(threading.Thread):
         _log.debug('run(): {}'.format(self.address))
         self.init()
         try:
-            while self._daemon.height() > self._wallet.height() + self.treat_as_synced_height_diff:
-                time.sleep(20)
-            sec = 0
+            while self._daemon.height() > self.wallet.height() + self.treat_as_synced_height_diff:
+                time.sleep(10)
+            self.status = WALLET_SYNCED
             while not self.shut_down:
-                if sec % 60 == 0:   # block generation period
-                    self.incoming = self._wallet.incoming()
-                    self.outgoing = self._wallet.outgoing()
-                    self.status = WALLET_SYNCED
                 time.sleep(1)
-                sec += 1
         finally:
             self.close()
 
@@ -196,7 +229,7 @@ class WalletController(threading.Thread):
                 self.status = WALLET_FAILED
                 raise CommunicationError('Wallet address {} is not the same as address passed in constructor: {}'\
                         .format(waddr, self.address))
-            self._wallet = wallet
+            self.wallet = wallet
             self.status = WALLET_SYNCING
         except Exception as e:
             self.close()
@@ -216,10 +249,15 @@ class WalletController(threading.Thread):
 
 
 class WalletPool(object):
+    """Runs a pool of wallets in given directory. This class should not be run directly
+    but subclassed and equipped in some of the event handling methods:
+    `main_loop_cycle`, `next_addr`, `wallet_started`, `wallet_synced`, `wallet_closed`
+    """
     manager = None
     running = None
     rpc_port_range = (18090, 18200)     # like in range()
     max_running = 2
+    main_loop_sleep_time = 5
     bc_height = 0
 
     def __init__(self, manager, max_running=None,
@@ -236,18 +274,28 @@ class WalletPool(object):
                 host=daemon_host, port=daemon_port, user=daemon_user, password=daemon_password))
         self.running = {}
 
+    def main_loop_cycle(self):
+        """Launched on every iteration of the main loop."""
+        _log.debug('Running {}/{} wallet(s).'.format(len(self.running), self.max_running))
+
     def next_addr(self):
         """Method which gets another address to be monitored. Returns address or None if no more
         addresses available at the moment. It must not block."""
         raise NotImplementedError('Subclass {cls} to implement next_addr()'.format(cls=type(self)))
 
+    def wallet_started(self, ctrl):
+        _log.debug('Wallet {} started.'.format(ctrl.address))
+
     def wallet_synced(self, ctrl):
         _log.warning('Wallet {} synced but the handler does nothing.'.format(ctrl.address))
 
-    def run(self):
+    def wallet_closed(self, address):
+        _log.debug('Wallet {} closed.'.format(address))
+
+    def main_loop(self):
         signal.signal(signal.SIGINT, self.stop)
         while True:
-            _log.info('Running: {}'.format(len(self.running)))
+            self.main_loop_cycle()
             while len(self.running) < self.max_running:
                 newaddr = str(self.next_addr())
                 if newaddr is None or newaddr in self.running:
@@ -256,13 +304,15 @@ class WalletPool(object):
                 ctrl = WalletController(newaddr, next(self._rpc_port_gen), self.manager, self.daemon)
                 self.running[newaddr] = ctrl
                 ctrl.start()
+                self.wallet_started(ctrl)
             for addr, ctrl in list(self.running.items()):
-                _log.info('{}: {}'.format(addr[:6], ctrl.status))
+                _log.debug('{}: {}'.format(addr[:6], ctrl.status))
                 if ctrl.status == WALLET_SYNCED:
                     self.wallet_synced(ctrl)
                 elif ctrl.status == WALLET_CLOSED:
+                    self.wallet_closed(addr)
                     del self.running[addr]
-            time.sleep(5)
+            time.sleep(self.main_loop_sleep_time)
 
     def stop(self, *args):
         _log.info('SIGINT received, cleaning up.')
@@ -270,6 +320,6 @@ class WalletPool(object):
             _log.info('{}: {}'.format(addr[:6], ctrl.status))
             ctrl.shut_down = True
         for _, ctrl in self.running.items():
-            _log.debug('Waiting for {} to stop'.format(ctrl.address))
+            _log.info('Waiting for {} to stop'.format(ctrl.address))
             ctrl.join()
         sys.exit(0)
