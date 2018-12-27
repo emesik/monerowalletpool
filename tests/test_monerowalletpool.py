@@ -2,15 +2,15 @@ import os
 import tempfile
 import unittest
 
-from monerowalletpool import WalletManager, WalletCreationError
+from monerowalletpool import WalletsManager, WalletCreationError
 
 class CreateManagers(object):
     def setUp(self):
         self.walletdir = tempfile.TemporaryDirectory()
 
-        self.mainnet_mgr = WalletManager(directory=self.walletdir.name)
-        self.stagenet_mgr = WalletManager(directory=self.walletdir.name, net='stagenet')
-        self.testnet_mgr = WalletManager(directory=self.walletdir.name, net='testnet')
+        self.mainnet_mgr = WalletsManager(directory=self.walletdir.name)
+        self.stagenet_mgr = WalletsManager(directory=self.walletdir.name, net='stagenet')
+        self.testnet_mgr = WalletsManager(directory=self.walletdir.name, net='testnet')
 
     def tearDown(self):
         self.walletdir.cleanup()
