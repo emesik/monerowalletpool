@@ -189,6 +189,10 @@ class WalletController(threading.Thread):
     wallet = None
     shut_down = False   # set from external thread to stop this WalletController
     treat_as_synced_height_diff = 1
+    # The following specifies retries * sleep for opening a wallet.
+    # Default 100 sec may fail on fresh wallets. Don't panic.
+    init_sleep = 10
+    init_retries = 10
 
     def __init__(self, address, port, manager, daemon):
         self.port = port
@@ -214,7 +218,7 @@ class WalletController(threading.Thread):
         try:
             retries = 0
             while True:
-                time.sleep(3)
+                time.sleep(10)
                 try:
                     wallet = monero.wallet.Wallet(
                         monero.backends.jsonrpc.JSONRPCWallet(port=self.port))
