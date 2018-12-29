@@ -27,25 +27,40 @@ class WalletCreationError(CommunicationError):
     pass
 
 
-class WalletsManager(object):
+class DaemonClient(object):
+    daemon_host = '127.0.0.1'
+    daemon_port = 18081
+
+    def __init__(self, **kwargs):
+        self.daemon_host = kwargs.pop('daemon_host', self.daemon_host)
+        self.daemon_port = kwargs.pop('daemon_port', self.daemon_port)
+        super(DaemonClient, self).__init__(**kwargs)
+
+    def daemon_connection_params(self):
+        return {'daemon_host': self.daemon_host, 'daemon_port': self.daemon_port}
+
+    def connect_daemon(self):
+        self.daemon = monero.daemon.Daemon(monero.backends.jsonrpc.JSONRPCDaemon(
+                host=self.daemon_host, port=self.daemon_port))
+        return self.daemon
+
+
+class WalletsManager(DaemonClient):
     """Manages a directory of wallets. Can list, create, open and generate wallets."""
     directory = '.'
     cmd_cli = 'monero-wallet-cli'
     cmd_rpc = 'monero-wallet-rpc'
-    daemon_host = '127.0.0.1'
-    daemon_port = 18081
     net = 'mainnet'
 
-    def __init__(self, directory=None, net=None, cmd_cli=None, cmd_rpc=None,
-            daemon_host=None, daemon_port=None, rpc_port_range=None):
+    def __init__(self, directory=None, net=None, cmd_cli=None, cmd_rpc=None, rpc_port_range=None,
+            **kwargs):
         self.directory = directory or self.directory
         self.cmd_cli = cmd_cli or self.cmd_cli
         self.cmd_rpc = cmd_rpc or self.cmd_rpc
         self.net = net or self.net
-        self.daemon_host = daemon_host or self.daemon_host
-        self.daemon_port = daemon_port or self.daemon_port
         assert self.net in ('mainnet', 'stagenet', 'testnet')
         assert os.path.exists(self.directory) and os.path.isdir(self.directory)
+        super(WalletsManager, self).__init__(**kwargs)
 
     def _common_args(self):
         args = ['--password', '',
@@ -177,7 +192,7 @@ WALLET_CLOSED = 'closed'
 WALLET_FAILED = 'failed'
 
 
-class WalletController(threading.Thread):
+class WalletController(DaemonClient, threading.Thread):
     """A threat that controls running wallet. Needs a daemon connection to determine whether
     wallet height is up to date (synced). Exposes three fields:
         * `status` - indicates the state of the wallet, where `WALLET_SYNCED` means a running and
@@ -194,18 +209,18 @@ class WalletController(threading.Thread):
     init_sleep = 10
     init_retries = 10
 
-    def __init__(self, address, port, manager, daemon):
+    def __init__(self, address, port, manager, **kwargs):
         self.port = port
         self.address = address
-        self._manager = manager
-        self._daemon = daemon
-        super(WalletController, self).__init__(name=str(address))
+        self.manager = manager
+        super(WalletController, self).__init__(name=str(address), **kwargs)
+        self.connect_daemon()
 
     def run(self):
         _log.debug('run(): {}'.format(self.address))
         self.init()
         try:
-            while self._daemon.height() > self.wallet.height() + self.treat_as_synced_height_diff:
+            while self.daemon.height() > self.wallet.height() + self.treat_as_synced_height_diff:
                 time.sleep(10)
             self.status = WALLET_SYNCED
             while not self.shut_down:
@@ -214,7 +229,7 @@ class WalletController(threading.Thread):
             self.close()
 
     def init(self):
-        self._wallet_rpc = self._manager.open_wallet(self.address, self.port)
+        self._wallet_rpc = self.manager.open_wallet(self.address, self.port)
         try:
             retries = 0
             while True:
@@ -252,7 +267,7 @@ class WalletController(threading.Thread):
         self.status = WALLET_CLOSED
 
 
-class WalletPool(object):
+class WalletPool(DaemonClient):
     """Runs a pool of wallets in given directory. This class should not be run directly
     but subclassed and equipped in some of the event handling methods:
     `main_loop_cycle`, `next_addr`, `wallet_started`, `wallet_synced`, `wallet_closed`
@@ -264,8 +279,7 @@ class WalletPool(object):
     main_loop_sleep_time = 5
     bc_height = 0
 
-    def __init__(self, manager, max_running=None,
-            daemon_host='127.0.0.1', daemon_port=18081, daemon_user='', daemon_password=''):
+    def __init__(self, manager, max_running=None, **kwargs):
         self.manager = manager or self.manager
         if self.manager is None:
             raise ValueError('Cannot run pool with no WalletManager.')
@@ -273,10 +287,8 @@ class WalletPool(object):
         self.max_running = min(
             max_running or self.max_running,
             self.rpc_port_range[1] - self.rpc_port_range[0])
-        self.daemon = monero.daemon.Daemon(
-            monero.backends.jsonrpc.JSONRPCDaemon(
-                host=daemon_host, port=daemon_port, user=daemon_user, password=daemon_password))
         self.running = {}
+        super(WalletPool, self).__init__(**kwargs)
 
     def main_loop_cycle(self):
         """Launched on every iteration of the main loop."""
@@ -305,7 +317,8 @@ class WalletPool(object):
                 if newaddr is None or newaddr in self.running:
                     # don't start duplicates
                     continue
-                ctrl = WalletController(newaddr, next(self._rpc_port_gen), self.manager, self.daemon)
+                ctrl = WalletController(newaddr, next(self._rpc_port_gen), self.manager,
+                        **self.daemon_connection_params())
                 self.running[newaddr] = ctrl
                 ctrl.start()
                 self.wallet_started(ctrl)
