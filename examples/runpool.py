@@ -30,11 +30,27 @@ class DirPool(WalletPool):
         ctrl.shut_down = True
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    if len(sys.argv) != 2:
-        print('Usage: {} <directory>'.format(*sys.argv), file=sys.stderr)
+    def usage():
+        print('Usage: {} <directory> [daemonhost:port]'.format(*sys.argv), file=sys.stderr)
         sys.exit(1)
+
+    logging.basicConfig(level=logging.INFO)
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        usage()
+    host = '127.0.0.1'
+    port = 18081
+    if len(sys.argv) == 3:
+        try:
+            host, port = sys.argv[2].split(':')
+            port = int(port)
+        except:
+            usage()
     pool = DirPool(
-            WalletsManager(directory=sys.argv[1], net='stagenet', daemon_port=38081),
-            daemon_port=38081)
+            WalletsManager(
+                directory=sys.argv[1],
+                net='stagenet',
+                daemon_host=host,
+                daemon_port=port),
+            daemon_host=host,
+            daemon_port=port)
     pool.main_loop()
