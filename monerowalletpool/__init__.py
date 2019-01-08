@@ -251,10 +251,10 @@ class WalletController(DaemonClient, threading.Thread):
             self.wallet = wallet
             self.status = WALLET_SYNCING
         except Exception as e:
-            self.close()
+            self.close(final_status=WALLET_FAILED)
             raise
 
-    def close(self):
+    def close(self, final_status=WALLET_CLOSED):
         self.status = WALLET_CLOSING
         self._wallet_rpc.terminate()
         tmout = 0
@@ -264,7 +264,7 @@ class WalletController(DaemonClient, threading.Thread):
             if tmout >= 10:
                 self._wallet_rpc.kill()
                 break
-        self.status = WALLET_CLOSED
+        self.status = final_status
 
 
 class WalletPool(DaemonClient):
@@ -308,6 +308,9 @@ class WalletPool(DaemonClient):
     def wallet_closed(self, address):
         _log.debug('Wallet {} closed.'.format(address))
 
+    def wallet_failed(self, address):
+        _log.debug('Wallet {} failed.'.format(address))
+
     def main_loop(self):
         signal.signal(signal.SIGINT, self.stop)
         while True:
@@ -328,6 +331,11 @@ class WalletPool(DaemonClient):
                     self.wallet_synced(ctrl)
                 elif ctrl.status == WALLET_CLOSED:
                     self.wallet_closed(addr)
+                    ctrl.join()
+                    del self.running[addr]
+                elif ctrl.status == WALLET_FAILED:
+                    self.wallet_failed(addr)
+                    ctrl.join()
                     del self.running[addr]
             time.sleep(self.main_loop_sleep_time)
 
