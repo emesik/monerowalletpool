@@ -38,7 +38,7 @@ if __name__ == '__main__':
         print('Usage: {} <directory> [daemonhost:port]'.format(*sys.argv), file=sys.stderr)
         sys.exit(1)
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
     if len(sys.argv) < 2 or len(sys.argv) > 3:
         usage()
     host = '127.0.0.1'
