@@ -65,6 +65,7 @@ class WalletsManager(DaemonClient):
     def _common_args(self):
         args = ['--password', '',
                 '--daemon-address', '%s:%s' % (self.daemon_host, self.daemon_port),
+                '--trusted-daemon',
                 '--log-file', '/dev/null']
         if self.net == 'stagenet':
             args.append('--stagenet')
