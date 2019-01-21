@@ -231,6 +231,7 @@ class WalletController(DaemonClient, threading.Thread):
 
     def is_alive(self):
         if self._wallet_rpc.poll() is None:
+            _log.debug('Wallet {} is alive.'.format(self.address))
             return True
         return False
 
