@@ -229,12 +229,22 @@ class WalletController(DaemonClient, threading.Thread):
         finally:
             self.close()
 
+    def is_alive(self):
+        if self._wallet_rpc.poll() is None:
+            return True
+        return False
+
     def init(self):
         self._wallet_rpc = self.manager.open_wallet(self.address, self.port)
         try:
             retries = 0
             while True:
                 time.sleep(10)
+                if not self.is_alive():
+                    out, err = self._wallet_rpc.communicate()
+                    raise RuntimeError('Wallet {} has stopped with exit code {}\n' \
+                            'stdout:\n{}\nstderr:\n{}\n'.format(
+                            self.address, self._wallet_rpc.returncode, out, err))
                 try:
                     wallet = monero.wallet.Wallet(
                         monero.backends.jsonrpc.JSONRPCWallet(port=self.port))
@@ -257,7 +267,8 @@ class WalletController(DaemonClient, threading.Thread):
 
     def close(self, final_status=WALLET_CLOSED):
         self.status = WALLET_CLOSING
-        self._wallet_rpc.terminate()
+        if not self.is_alive():
+            self._wallet_rpc.terminate()
         tmout = 0
         while not self._wallet_rpc.poll():
             time.sleep(1)
