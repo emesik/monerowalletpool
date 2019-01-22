@@ -1,4 +1,5 @@
 import collections
+import datetime
 import itertools
 import logging
 import monero
@@ -209,11 +210,14 @@ class WalletController(DaemonClient, threading.Thread):
     # Default 100 sec may fail on fresh wallets. Don't panic.
     init_sleep = 10
     init_retries = 10
+    start_time = None       # datetime.datetime of starting
+    running_time = None     # datetime.timedelta of running time
 
     def __init__(self, address, port, manager, **kwargs):
         self.port = port
         self.address = address
         self.manager = manager
+        self.start_time = datetime.datetime.now()
         super(WalletController, self).__init__(name=str(address), **kwargs)
         self.connect_daemon()
 
@@ -278,6 +282,7 @@ class WalletController(DaemonClient, threading.Thread):
                 self._wallet_rpc.kill()
                 break
         self.status = final_status
+        self.running_time = datetime.datetime.now() - self.start_time
 
 
 class WalletPool(DaemonClient):
