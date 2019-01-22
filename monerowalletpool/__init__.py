@@ -248,7 +248,7 @@ class WalletController(DaemonClient, threading.Thread):
                     out, err = self._wallet_rpc.communicate()
                     raise RuntimeError('Wallet {} has stopped with exit code {}\n' \
                             'stdout:\n{}\nstderr:\n{}\n'.format(
-                            self.address, self._wallet_rpc.returncode, out, err))
+                            self.address, self._wallet_rpc.returncode, out.decode(), err.decode()))
                 try:
                     wallet = monero.wallet.Wallet(
                         monero.backends.jsonrpc.JSONRPCWallet(port=self.port))
