@@ -76,8 +76,8 @@ class WalletsManager(DaemonClient):
 
     def _shutdown(self, wpopen):
         out, err = wpopen.communicate()
-        _log.debug('stdout: %s' % out)
-        _log.debug('stderr: %s' % err)
+        _log.debug('stdout: %s' % out.decode())
+        _log.debug('stderr: %s' % err.decode())
         tmout = 0
         while not wpopen.poll():
             time.sleep(1)
