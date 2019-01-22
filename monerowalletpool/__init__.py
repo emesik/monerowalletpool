@@ -244,7 +244,6 @@ class WalletController(DaemonClient, threading.Thread):
         try:
             retries = 0
             while True:
-                time.sleep(10)
                 if not self.is_alive():
                     out, err = self._wallet_rpc.communicate()
                     raise RuntimeError('Wallet {} has stopped with exit code {}\n' \
@@ -259,6 +258,7 @@ class WalletController(DaemonClient, threading.Thread):
                         self.status = WALLET_FAILED
                         raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
                     retries += 1
+                time.sleep(10)
             waddr = wallet.address()
             if waddr != self.address:
                 self.status = WALLET_FAILED
