@@ -323,11 +323,11 @@ class WalletPool(DaemonClient):
     def wallet_synced(self, ctrl):
         _log.warning('Wallet {} synced but the handler does nothing.'.format(ctrl.address))
 
-    def wallet_closed(self, address):
-        _log.debug('Wallet {} closed.'.format(address))
+    def wallet_closed(self, ctrl):
+        _log.debug('Wallet {} closed.'.format(ctrl.address))
 
-    def wallet_failed(self, address):
-        _log.debug('Wallet {} failed.'.format(address))
+    def wallet_failed(self, ctrl):
+        _log.debug('Wallet {} failed.'.format(ctrl.address))
 
     def main_loop(self):
         signal.signal(signal.SIGINT, self.stop)
@@ -348,11 +348,11 @@ class WalletPool(DaemonClient):
                 if ctrl.status == WALLET_SYNCED:
                     self.wallet_synced(ctrl)
                 elif ctrl.status == WALLET_CLOSED:
-                    self.wallet_closed(addr)
+                    self.wallet_closed(ctrl)
                     ctrl.join()
                     del self.running[addr]
                 elif ctrl.status == WALLET_FAILED:
-                    self.wallet_failed(addr)
+                    self.wallet_failed(ctrl)
                     ctrl.join()
                     del self.running[addr]
             time.sleep(self.main_loop_sleep_time)
