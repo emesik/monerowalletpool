@@ -111,26 +111,42 @@ class WalletsManager(DaemonClient):
                 addresses.appendleft(addr)
         return addresses
 
-    def create_wallet(self, address, viewkey):
+    def wallet_exists(self, address):
+        return os.path.exists(os.path.join(self.directory, '{}.keys'.format(address)))
+
+    def create_wallet(self, address, viewkey, spendkey):
         """Creates a view-only wallet."""
+        assert viewkey is not None or spendkey is not None
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
             _log.debug('Wallet file: %s' % wfile)
-            args = [self.cmd_cli,
-                    '--generate-from-view-key', wfile]
+            args = [self.cmd_cli]
+            if spendkey:
+                args.append('--generate-from-spend-key')
+                key = spendkey
+            else:
+                args.append('--generate-from-view-key')
+                key = viewkey
+            args.append(wfile)
             args.extend(self._common_args())
             _log.debug(' '.join(args))
             wcreate = subprocess.Popen(args, bufsize=0,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out = b''
+            i = 0
             while b'Logging' not in out:
                 out = wcreate.stdout.readline()
-                _log.debug('stdout: %s' % out)
-            wcreate.stdin.write(b'%s\n' % str(address).encode('ascii'))
-            _log.debug(b'%s\n' % str(address).encode('ascii'))
-            wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))
-            wcreate.stdin.write(b'\n\n')
-            wcreate.stdin.write(b'0\n')
+                if i < 10:  # don't flood if something fails
+                    _log.debug('stdout: %s' % out)
+                i += 1
+            if spendkey:
+                wcreate.stdin.write(b'%s\n' % str(spendkey).encode('ascii'))    # key
+                wcreate.stdin.write(b'1\n')                                     # English language
+                wcreate.stdin.write(b'0\n')                                     # refresh from 0
+            else:
+                wcreate.stdin.write(b'%s\n' % str(address).encode('ascii'))     # address
+                wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))     # key
+                wcreate.stdin.write(b'0\n')                                     # refresh from 0
             out, _ = self._shutdown(wcreate)
             if not os.path.exists(wfile):
                 error_re = re.compile(r'(Error:.*)').search(out.decode('utf-8'))
@@ -196,11 +212,13 @@ WALLET_FAILED = 'failed'
 
 class WalletController(DaemonClient, threading.Thread):
     """A threat that controls running wallet. Needs a daemon connection to determine whether
-    wallet height is up to date (synced). Exposes three fields:
+    wallet height is up to date (synced). Exposes fields:
         * `status` - indicates the state of the wallet, where `WALLET_SYNCED` means a running and
           fully synced wallet,
         * `wallet` - the `monero.wallet.Wallet` object that allows talking to wallet API.
         * `shut_down` - a flag which causes the wallet to shut down gracefully once set to `True`.
+        * `start_time` - a datetime.datetime stamp of intialization time.
+        * `running_time` - a datetime.timedelta period of running, once it reaches terminal status.
     """
     status = WALLET_STARTING
     wallet = None
@@ -212,11 +230,13 @@ class WalletController(DaemonClient, threading.Thread):
     init_retries = 10
     start_time = None       # datetime.datetime of starting
     running_time = None     # datetime.timedelta of running time
+    keys = (None, None)
 
     def __init__(self, address, port, manager, **kwargs):
         self.port = port
         self.address = address
         self.manager = manager
+        self.keys = kwargs.pop('keys', self.keys)
         self.start_time = datetime.datetime.now()
         super(WalletController, self).__init__(name=str(address), **kwargs)
         self.connect_daemon()
@@ -240,6 +260,14 @@ class WalletController(DaemonClient, threading.Thread):
         return False
 
     def init(self):
+        if not self.manager.wallet_exists(self.address):
+            _log.info('Wallet {} doesn\'t exist.'.format(self.address))
+            if self.keys[0] or self.keys[1]:
+                self.manager.create_wallet(self.address, *self.keys)
+            else:
+                _log.error('No keys for wallet {}. Cannot generate.'.format(self.address))
+                self.status = WALLET_FAILED
+                return
         self._wallet_rpc = self.manager.open_wallet(self.address, self.port)
         try:
             retries = 0
@@ -317,6 +345,12 @@ class WalletPool(DaemonClient):
         addresses available at the moment. It must not block."""
         raise NotImplementedError('Subclass {cls} to implement next_addr()'.format(cls=type(self)))
 
+    def keys_for_address(self, addr):
+        """Method returning (secret_view, secret_spend) keys for given address.
+        If both keys are None, the address will be skipped.
+        If only spend key is None, a view wallet will be created as the result."""
+        return (None, None)
+
     def wallet_started(self, ctrl):
         _log.debug('Wallet {} started.'.format(ctrl.address))
 
@@ -338,8 +372,11 @@ class WalletPool(DaemonClient):
                 if newaddr is None or newaddr in self.running:
                     # don't start duplicates
                     continue
-                ctrl = WalletController(newaddr, next(self._rpc_port_gen), self.manager,
-                        **self.daemon_connection_params())
+                ctrl = WalletController(
+                        newaddr,
+                        next(self._rpc_port_gen),
+                        self.manager,
+                        keys=self.keys_for_address(newaddr))
                 self.running[newaddr] = ctrl
                 ctrl.start()
                 self.wallet_started(ctrl)
