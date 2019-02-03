@@ -371,7 +371,7 @@ class WalletPool(DaemonClient):
                 newaddr = str(self.next_addr())
                 if newaddr is None or newaddr in self.running:
                     # don't start duplicates
-                    continue
+                    break
                 ctrl = WalletController(
                         newaddr,
                         next(self._rpc_port_gen),
