@@ -376,7 +376,8 @@ class WalletPool(DaemonClient):
                         newaddr,
                         next(self._rpc_port_gen),
                         self.manager,
-                        keys=self.keys_for_address(newaddr))
+                        keys=self.keys_for_address(newaddr),
+                        **self.daemon_connection_params())
                 self.running[newaddr] = ctrl
                 ctrl.start()
                 self.wallet_started(ctrl)
