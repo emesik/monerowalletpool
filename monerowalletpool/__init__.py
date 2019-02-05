@@ -115,7 +115,7 @@ class WalletsManager(DaemonClient):
         return os.path.exists(os.path.join(self.directory, '{}.keys'.format(address)))
 
     def create_wallet(self, address, viewkey, spendkey):
-        """Creates a view-only wallet."""
+        """Creates a wallet."""
         assert viewkey is not None or spendkey is not None
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
@@ -123,10 +123,8 @@ class WalletsManager(DaemonClient):
             args = [self.cmd_cli]
             if spendkey:
                 args.append('--generate-from-spend-key')
-                key = spendkey
             else:
                 args.append('--generate-from-view-key')
-                key = viewkey
             args.append(wfile)
             args.extend(self._common_args())
             _log.debug(' '.join(args))
@@ -368,7 +366,7 @@ class WalletPool(DaemonClient):
         while True:
             self.main_loop_cycle()
             while len(self.running) < self.max_running:
-                newaddr = str(self.next_addr())
+                newaddr = self.next_addr()
                 if newaddr is None or newaddr in self.running:
                     # don't start duplicates
                     break
