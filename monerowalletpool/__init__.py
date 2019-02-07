@@ -114,8 +114,13 @@ class WalletsManager(DaemonClient):
     def wallet_exists(self, address):
         return os.path.exists(os.path.join(self.directory, '{}.keys'.format(address)))
 
-    def create_wallet(self, address, viewkey, spendkey):
+    def create_wallet(self, address, viewkey, spendkey, wait_for_sync=False):
         """Creates a wallet."""
+        def _check_error(bs):
+            error_re = re.compile(r'(Error:.*)').search(bs.decode('utf-8'))
+            if error_re:
+                raise WalletCreationError(error_re.groups()[0])
+
         assert viewkey is not None or spendkey is not None
         with tempfile.TemporaryDirectory() as wdir:
             wfile = os.path.join(wdir, 'wallet')
@@ -145,11 +150,20 @@ class WalletsManager(DaemonClient):
                 wcreate.stdin.write(b'%s\n' % str(address).encode('ascii'))     # address
                 wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))     # key
                 wcreate.stdin.write(b'0\n')                                     # refresh from 0
+            if wait_for_sync:
+                while True:
+                    oldchunk = b''
+                    chunk = wcreate.stdout.read(64)
+                    out = oldchunk + chunk
+                    _check_error(out)
+                    if b'Refresh done' in out or b'Balance' in out:
+                        break
+                    _log.debug('stdout: %s' % chunk)
+                    time.sleep(0)
+                    oldchunk = chunk
             out, _ = self._shutdown(wcreate)
             if not os.path.exists(wfile):
-                error_re = re.compile(r'(Error:.*)').search(out.decode('utf-8'))
-                if error_re:
-                    raise WalletCreationError(error_re.groups()[0])
+                _check_error(out)
                 raise WalletCreationError('Unknown error')
             kfile = '%s.keys' % wfile
             shutil.move(wfile, os.path.join(self.directory, str(address)))
@@ -201,6 +215,7 @@ class WalletsManager(DaemonClient):
 
 
 WALLET_STARTING = 'starting'
+WALLET_CREATING = 'creating'
 WALLET_SYNCING = 'syncing'
 WALLET_SYNCED = 'synced'
 WALLET_CLOSING = 'closing'
@@ -221,6 +236,7 @@ class WalletController(DaemonClient, threading.Thread):
     status = WALLET_STARTING
     wallet = None
     shut_down = False   # set from external thread to stop this WalletController
+    sync_new = True     # whether to wait for created wallets to sync fully
     treat_as_synced_height_diff = 1
     # The following specifies retries * sleep for opening a wallet.
     # Default 100 sec may fail on fresh wallets. Don't panic.
@@ -235,6 +251,7 @@ class WalletController(DaemonClient, threading.Thread):
         self.address = address
         self.manager = manager
         self.keys = kwargs.pop('keys', self.keys)
+        self.sync_new = kwargs.pop('sync_new', self.sync_new)
         self.start_time = datetime.datetime.now()
         super(WalletController, self).__init__(name=str(address), **kwargs)
         self.connect_daemon()
@@ -261,7 +278,9 @@ class WalletController(DaemonClient, threading.Thread):
         if not self.manager.wallet_exists(self.address):
             _log.info('Wallet {} doesn\'t exist.'.format(self.address))
             if self.keys[0] or self.keys[1]:
-                self.manager.create_wallet(self.address, *self.keys)
+                self.status = WALLET_CREATING
+                self.manager.create_wallet(self.address, *self.keys, wait_for_sync=self.sync_new)
+                self.status = WALLET_STARTING
             else:
                 _log.error('No keys for wallet {}. Cannot generate.'.format(self.address))
                 self.status = WALLET_FAILED
