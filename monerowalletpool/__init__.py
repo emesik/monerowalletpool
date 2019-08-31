@@ -151,8 +151,8 @@ class WalletsManager(DaemonClient):
                 wcreate.stdin.write(b'%s\n' % str(viewkey).encode('ascii'))     # key
                 wcreate.stdin.write(b'0\n')                                     # refresh from 0
             if wait_for_sync:
+                oldchunk = b''
                 while True:
-                    oldchunk = b''
                     chunk = wcreate.stdout.read(64)
                     out = oldchunk + chunk
                     _check_error(out)
