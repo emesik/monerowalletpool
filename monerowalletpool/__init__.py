@@ -353,6 +353,9 @@ class WalletPool(DaemonClient):
         self.running = {}
         super(WalletPool, self).__init__(**kwargs)
 
+    def shortaddr(self, address):
+        return str(address)[:6]
+
     def main_loop_cycle(self):
         """Launched on every iteration of the main loop."""
         _log.debug('Running {}/{} wallet(s).'.format(len(self.running), self.max_running))
@@ -399,7 +402,7 @@ class WalletPool(DaemonClient):
                 ctrl.start()
                 self.wallet_started(ctrl)
             for addr, ctrl in list(self.running.items()):
-                _log.debug('{}: {}'.format(addr[:6], ctrl.status))
+                _log.debug('{}: {}'.format(self.shortaddr(addr), ctrl.status))
                 if ctrl.status == WALLET_SYNCED:
                     self.wallet_synced(ctrl)
                 elif ctrl.status == WALLET_CLOSED:
@@ -415,7 +418,7 @@ class WalletPool(DaemonClient):
     def stop(self, *args):
         _log.info('SIGINT received, cleaning up.')
         for addr, ctrl in self.running.items():
-            _log.info('{}: {}'.format(addr[:6], ctrl.status))
+            _log.info('{}: {}'.format(self.shortaddr(addr), ctrl.status))
             ctrl.shut_down = True
         for _, ctrl in self.running.items():
             _log.info('Waiting for {} to stop'.format(ctrl.address))

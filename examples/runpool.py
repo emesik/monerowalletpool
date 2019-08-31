@@ -22,14 +22,14 @@ class DirPool(WalletPool):
         return next(self._addresses)
 
     def wallet_started(self, ctrl):
-        _log.info('Started: {}'.format(ctrl.address[:6]))
+        _log.info('Started: {}'.format(self.shortaddr(ctrl.address)))
 
     def wallet_synced(self, ctrl):
         _log.info('{} Incoming: [{}]'.format(
-                ctrl.address[:6],
+                self.shortaddr(ctrl.address),
                 ','.join(map(lambda p: '{:4.12f}'.format(p.amount), ctrl.wallet.incoming()))))
         _log.info('{} Outgoing: [{}]'.format(
-                ctrl.address[:6],
+                self.shortaddr(ctrl.address),
                 ','.join(map(lambda p: '{:4.12f}'.format(p.amount), ctrl.wallet.outgoing()))))
         ctrl.shut_down = True
 
