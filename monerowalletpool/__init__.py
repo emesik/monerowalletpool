@@ -303,7 +303,7 @@ class WalletController(DaemonClient, threading.Thread):
                         self.status = WALLET_FAILED
                         raise CommunicationError('Could not connect to wallet RPC in 10 retries.')
                     retries += 1
-                time.sleep(10)
+                time.sleep(20)
             waddr = wallet.address()
             if waddr != self.address:
                 self.status = WALLET_FAILED
