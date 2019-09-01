@@ -52,22 +52,31 @@ class WalletsManager(DaemonClient):
     cmd_cli = 'monero-wallet-cli'
     cmd_rpc = 'monero-wallet-rpc'
     net = 'mainnet'
+    log_dir = '.'
+    log_level = 1
 
     def __init__(self, directory=None, net=None, cmd_cli=None, cmd_rpc=None, rpc_port_range=None,
-            **kwargs):
+            log_dir=None, log_level=None, **kwargs):
         self.directory = directory or self.directory
         self.cmd_cli = cmd_cli or self.cmd_cli
         self.cmd_rpc = cmd_rpc or self.cmd_rpc
         self.net = net or self.net
+        self.log_dir = log_dir or self.log_dir
+        self.log_level = log_level if log_level is not None else self.log_level
         assert self.net in ('mainnet', 'stagenet', 'testnet')
         assert os.path.exists(self.directory) and os.path.isdir(self.directory)
         super(WalletsManager, self).__init__(**kwargs)
 
-    def _common_args(self):
+    def _common_args(self, log_file=None):
         args = ['--password', '',
                 '--daemon-address', '%s:%s' % (self.daemon_host, self.daemon_port),
                 '--trusted-daemon',
-                '--log-file', '/dev/null']
+                '--log-level', str(self.log_level)]
+        args.append('--log-file')
+        if log_file:
+            args.append(os.path.join(self.log_dir, log_file))
+        else:
+            args.append('/dev/null')
         if self.net == 'stagenet':
             args.append('--stagenet')
         elif self.net == 'testnet':
@@ -131,7 +140,7 @@ class WalletsManager(DaemonClient):
             else:
                 args.append('--generate-from-view-key')
             args.append(wfile)
-            args.extend(self._common_args())
+            args.extend(self._common_args("{:s}-create.log".format(address)))
             _log.debug(' '.join(args))
             wcreate = subprocess.Popen(args, bufsize=0,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -178,7 +187,7 @@ class WalletsManager(DaemonClient):
             args = [self.cmd_cli,
                     '--use-english-language-names']
             args.extend(['--generate-new-wallet', wfile])
-            args.extend(self._common_args())
+            args.extend(self._common_args("generate.log"))
             _log.debug(' '.join(args))
             wcreate = subprocess.Popen(args, bufsize=0,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -208,7 +217,7 @@ class WalletsManager(DaemonClient):
                 '--wallet-file', os.path.join(self.directory, str(address)),
                 '--rpc-bind-port', str(port),
                 '--disable-rpc-login']
-        args.extend(self._common_args())
+        args.extend(self._common_args("{:s}.log".format(address)))
         _log.debug(' '.join(args))
         return subprocess.Popen(args, bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -224,7 +233,7 @@ WALLET_FAILED = 'failed'
 
 
 class WalletController(DaemonClient, threading.Thread):
-    """A threat that controls running wallet. Needs a daemon connection to determine whether
+    """A thread that controls running wallet. Needs a daemon connection to determine whether
     wallet height is up to date (synced). Exposes fields:
         * `status` - indicates the state of the wallet, where `WALLET_SYNCED` means a running and
           fully synced wallet,
